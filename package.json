@@ -1,0 +1,38 @@
+{
+  "name": "portdeck",
+  "version": "1.0.0",
+  "description": "See every listening port on your machine — what it is, where it runs, and one click to kill it.",
+  "keywords": [
+    "ports",
+    "localhost",
+    "dev-server",
+    "kill-port",
+    "process-manager",
+    "dashboard",
+    "cli",
+    "macos"
+  ],
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "portdeck": "server.js"
+  },
+  "files": [
+    "server.js",
+    "public",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  }
+}

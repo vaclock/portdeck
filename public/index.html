@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PortDeck · 本机端口</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23ffffff'/><circle cx='16' cy='16' r='8.5' fill='none' stroke='%23a35c2b' stroke-width='3'/><circle cx='16' cy='16' r='3' fill='%23a35c2b'/></svg>"
+    />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="container topbar-inner">
+        <div class="brand">
+          <span class="jack" aria-hidden="true"></span>
+          <h1>PortDeck</h1>
+          <span class="tagline">本机端口</span>
+        </div>
+
+        <div class="summary">
+          <div class="meter-bar" id="meter" role="img" aria-label="端口占用分布"></div>
+          <p class="legend" id="meter-caption">正在读取端口…</p>
+        </div>
+
+        <span class="stamp" id="stamp"></span>
+      </div>
+    </header>
+
+    <div class="container toolbar">
+      <label class="field">
+        <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true">
+          <circle cx="8.7" cy="8.7" r="5.6" fill="none" stroke="currentColor" stroke-width="1.7" />
+          <path d="M12.9 12.9L17 17" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+        </svg>
+        <input id="search" type="text" placeholder="搜索端口、目录、命令" autocomplete="off" spellcheck="false" />
+        <button class="field-clear" id="search-clear" type="button" aria-label="清空搜索" hidden>
+          <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
+            <path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          </svg>
+        </button>
+      </label>
+
+      <label class="check">
+        <input type="checkbox" id="auto" />
+        <span>自动刷新</span>
+      </label>
+
+      <label class="check" id="system-label" title="系统与 IDE 常驻服务默认折叠；搜索时会自动展开">
+        <input type="checkbox" id="show-system" />
+        <span>显示系统服务</span>
+      </label>
+
+      <span class="spacer"></span>
+
+      <button class="btn" id="refresh" type="button">刷新</button>
+      <button class="btn btn-quiet-danger" id="kill-dev" type="button">关闭全部开发服务</button>
+    </div>
+
+    <main class="container">
+      <section class="panel">
+        <table class="grid">
+          <colgroup>
+            <col class="c-port" />
+            <col class="c-purpose" />
+            <col class="c-dir" />
+            <col class="c-link" />
+            <col class="c-proc" />
+            <col class="c-cpu" />
+            <col class="c-mem" />
+            <col class="c-act" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th data-sort="port">
+                <button class="th-btn" type="button" data-action="sort" data-key="port">端口</button>
+              </th>
+              <th>用途<span class="th-hint">点击修改</span></th>
+              <th>启动目录</th>
+              <th>访问链接</th>
+              <th>进程</th>
+              <th data-sort="cpu" class="num-head">
+                <button class="th-btn" type="button" data-action="sort" data-key="cpu">CPU</button>
+              </th>
+              <th data-sort="mem" class="num-head">
+                <button class="th-btn" type="button" data-action="sort" data-key="mem">内存</button>
+              </th>
+              <th class="th-actions"></th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+
+        <div class="empty" id="empty" hidden></div>
+
+        <div class="folded" id="folded" hidden>
+          <span class="folded-label">
+            <span class="lamp system"></span>
+            <span id="folded-count"></span>
+          </span>
+          <button class="link-btn" type="button" data-action="toggle-system">展开</button>
+        </div>
+      </section>
+
+      <footer class="foot">
+        <p>
+          只监听 127.0.0.1；用途备注存在 <code>data/notes.json</code>；关闭会连同子进程一起结束；按
+          <kbd>Ctrl</kbd><kbd>C</kbd> 退出工具本身。
+        </p>
+      </footer>
+    </main>
+
+    <div class="toasts" id="toasts" aria-live="polite"></div>
+
+    <div class="modal-mask" id="modal" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <h3 id="modal-title"></h3>
+        <div class="modal-body" id="modal-body"></div>
+        <div class="modal-actions">
+          <button class="btn" id="modal-cancel" type="button">取消</button>
+          <button class="btn btn-danger" id="modal-ok" type="button">确认关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
