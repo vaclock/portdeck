@@ -43,12 +43,57 @@ function run(file, args, opts = {}) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** 打开链接或目录：macOS / Linux / Windows 各用各的命令 */
+function openTarget(target) {
+  const ignore = () => {};
+  if (process.platform === 'darwin') return execFile('open', [target], ignore);
+  if (process.platform === 'win32') return execFile('cmd', ['/c', 'start', '', target], ignore);
+  return execFile('xdg-open', [target], ignore);
+}
+
 /* ------------------------------------------------------------------ */
 /* 监听端口                                                            */
 /* ------------------------------------------------------------------ */
 
+/** 解析 `ss -tlnp` 输出（Linux 上没有 lsof 时使用） */
+function parseSsTable(text) {
+  const byKey = new Map();
+
+  for (const line of String(text).split('\n')) {
+    const trimmed = line.trim();
+    if (!/^LISTEN/i.test(trimmed)) continue;
+
+    // State Recv-Q Send-Q Local:Port Peer:Port [users:(("node",pid=1234,fd=23))]
+    const parts = trimmed.split(/\s+/);
+    if (parts.length < 5) continue;
+
+    const local = parts[3];
+    const portMatch = local.match(/:(\d+)$/);
+    const pidMatch = trimmed.match(/pid=(\d+)/);
+    if (!portMatch || !pidMatch) continue;
+
+    const port = Number(portMatch[1]);
+    const pid = Number(pidMatch[1]);
+    if (!pid || !port) continue;
+
+    const key = `${pid}:${port}`;
+    let item = byKey.get(key);
+    if (!item) {
+      item = { pid, port, user: os.userInfo().username, procName: '', addrs: new Set() };
+      byKey.set(key, item);
+    }
+    item.addrs.add(local.replace(/:\d+$/, ''));
+  }
+
+  return [...byKey.values()];
+}
+
 async function listListening() {
   const out = await run('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN']);
+
+  // 精简 Linux 镜像常常不带 lsof，退回 ss
+  if (!out.trim()) return parseSsTable(await run('ss', ['-tlnp']));
+
   const byKey = new Map();
 
   for (const line of out.split('\n').slice(1)) {
@@ -76,11 +121,11 @@ async function listListening() {
 }
 
 async function psSnapshot() {
-  const out = await run('ps', ['-axo', 'pid=,ppid=,pgid=,etime=,%cpu=,rss=,cputime=,command=']);
+  const out = await run('ps', ['-axo', 'pid=,ppid=,pgid=,etime=,%cpu=,rss=,cputime=,user=,command=']);
   const map = new Map();
 
   for (const line of out.split('\n')) {
-    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+([\d.]+)\s+(\d+)\s+(\S+)\s+(.*)$/);
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+([\d.]+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.*)$/);
     if (!m) continue;
     const pid = Number(m[1]);
     map.set(pid, {
@@ -93,7 +138,8 @@ async function psSnapshot() {
       // rss 单位是 KB
       rssKb: Number(m[6]),
       cpuSeconds: cputimeToSeconds(m[7]),
-      command: m[8].trim(),
+      user: m[8],
+      command: m[9].trim(),
     });
   }
 
@@ -139,9 +185,22 @@ function sampleCpu(ps, sampledAt) {
   return live;
 }
 
-/** 批量取进程 cwd：lsof -a -p ... -d cwd -Fn */
+/** 批量取进程 cwd：Linux 直接读 /proc，其它平台用 lsof -a -p ... -d cwd -Fn */
 async function cwdsFor(pids) {
   const result = new Map();
+  if (!pids.length) return result;
+
+  if (process.platform === 'linux') {
+    for (const pid of pids) {
+      try {
+        result.set(pid, fs.readlinkSync(`/proc/${pid}/cwd`));
+      } catch {
+        // 进程已退出或权限不足
+      }
+    }
+    return result;
+  }
+
   const chunkSize = 40;
 
   for (let i = 0; i < pids.length; i += chunkSize) {
@@ -533,7 +592,7 @@ async function waitPortClosed(pid, port, timeout) {
   return false;
 }
 
-async function killPort(pid, port) {
+async function killPort(pid, port, options = {}) {
   const listeners = await listListening();
   const target = listeners.find((l) => l.pid === pid && l.port === port);
   if (!target) return { ok: false, error: '端口已不在监听（可能已被关闭）' };
@@ -545,6 +604,15 @@ async function killPort(pid, port) {
   if (selfChain.has(pid)) return { ok: false, error: '这个进程是本工具/AI 的父进程，拒绝关闭' };
 
   const info = ps.get(pid);
+
+  // 与网页端同一套判定：系统 / IDE 常驻服务默认不允许关闭，CLI 需要显式加 --force
+  if (info && !options.force) {
+    const cwd = (await cwdsFor([pid])).get(pid) || null;
+    if (classify(info.command, cwd, findProjectRoot(cwd)) === 'system') {
+      return { ok: false, error: '这是系统 / 工具常驻服务，确认要关闭请加 --force' };
+    }
+  }
+
   const ownPgid = ps.get(process.pid)?.pgid;
   // 只有当目标自己是进程组组长、且不是我们所在组时才整组结束，顺带收掉 npm/vite 子进程
   const groupKill = Boolean(info && info.pgid === pid && info.pgid !== ownPgid && !selfChain.has(info.pgid));
@@ -728,7 +796,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/open') {
       const port = Number(body.port);
       if (!Number.isInteger(port)) return sendJson(res, 400, { ok: false, error: 'port 不合法' });
-      execFile('open', [`http://localhost:${port}`]);
+      openTarget(`http://localhost:${port}`);
       return sendJson(res, 200, { ok: true });
     }
 
@@ -737,7 +805,7 @@ const server = http.createServer(async (req, res) => {
       if (!dir || !path.isAbsolute(dir) || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
         return sendJson(res, 400, { ok: false, error: '目录不存在' });
       }
-      execFile('open', [dir]);
+      openTarget(dir);
       return sendJson(res, 200, { ok: true });
     }
 
@@ -755,7 +823,7 @@ async function handlePortBusy(port, attempt) {
     if (Array.isArray(data.ports)) {
       const addr = `http://${HOST}:${port}`;
       console.log(`  PortDeck 已在 ${addr} 运行，直接打开该页面`);
-      if (process.env.NO_OPEN !== '1') execFile('open', [addr]);
+      if (process.env.NO_OPEN !== '1') openTarget(addr);
       return process.exit(0);
     }
   } catch {
@@ -777,9 +845,220 @@ function start(port, attempt = 0) {
   server.listen(port, HOST, () => {
     const addr = `http://${HOST}:${port}`;
     console.log(`\n  PortDeck 已启动  ${addr}\n  仅监听本机回环地址，Ctrl+C 退出\n`);
-    if (process.env.NO_OPEN !== '1') execFile('open', [addr]);
+    if (process.env.NO_OPEN !== '1') openTarget(addr);
   });
 }
 
-migrateLegacyNotes();
-start(BASE_PORT);
+/* ------------------------------------------------------------------ */
+/* 命令行                                                              */
+/* ------------------------------------------------------------------ */
+
+const HELP = `
+PortDeck — 本机端口总览
+
+用法
+  portdeck                    启动网页看板（默认）
+  portdeck --list, -l         在终端打印端口列表
+  portdeck --json             输出 JSON，便于脚本处理
+  portdeck --kill <port>      关闭占用该端口的进程
+        --force               允许关闭系统 / 工具常驻服务
+  portdeck --all              连同系统 / 工具常驻服务一起列出
+  portdeck --port <n>         指定网页看板端口（默认 7799）
+  portdeck --no-open          启动后不自动打开浏览器
+  portdeck --help, -h         显示帮助
+  portdeck --version, -v      显示版本
+
+示例
+  portdeck --list
+  portdeck --kill 3000
+  portdeck --json | jq '.ports[] | select(.kind == "dev")'
+`.trim();
+
+const KIND_TEXT = { dev: '开发', app: '应用', self: '本工具', system: '系统' };
+
+function fmtBytes(bytes) {
+  if (!bytes) return '-';
+  const mb = bytes / 1024 / 1024;
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)}G`;
+  if (mb >= 100) return `${Math.round(mb)}M`;
+  return `${mb.toFixed(1)}M`;
+}
+
+function purposeOf(port) {
+  if (port.note) return port.note;
+  if (port.title) return port.title;
+  if (port.kind === 'dev') return port.framework ? `${port.framework} 开发服务` : '开发服务';
+  if (port.kind === 'system') return `${port.processName || '常驻进程'} 系统服务`;
+  return port.framework ? `${port.framework} 服务` : `${port.processName} 服务`;
+}
+
+function charWidth(ch) {
+  return /[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]/.test(ch)
+    ? 2
+    : 1;
+}
+
+function displayWidth(text) {
+  let width = 0;
+  for (const ch of String(text)) width += charWidth(ch);
+  return width;
+}
+
+function padEndWidth(text, width) {
+  return text + ' '.repeat(Math.max(0, width - displayWidth(text)));
+}
+
+function truncateWidth(text, max) {
+  const value = String(text);
+  if (displayWidth(value) <= max) return value;
+
+  let out = '';
+  let width = 0;
+  for (const ch of value) {
+    const w = charWidth(ch);
+    if (width + w > max - 1) break;
+    out += ch;
+    width += w;
+  }
+  return `${out}…`;
+}
+
+/** 终端表格：不做花哨样式，靠对齐和留白 */
+function formatTable(ports, { all = false, color = false } = {}) {
+  const list = all ? ports : ports.filter((p) => p.kind !== 'system');
+  if (!list.length) return '没有监听中的端口';
+
+  const dim = (s) => (color ? `\x1b[2m${s}\x1b[0m` : s);
+  const bold = (s) => (color ? `\x1b[1m${s}\x1b[0m` : s);
+
+  const rows = list.map((p) => ({
+    lamp: p.killable ? '●' : '○',
+    port: String(p.port),
+    kind: KIND_TEXT[p.kind] || p.kind,
+    purpose: truncateWidth(purposeOf(p), 26),
+    dir: truncateWidth(p.dir ? p.dir.replace(/^\/Users\/[^/]+|^\/home\/[^/]+/, '~') : '-', 24),
+    url: `localhost:${p.port}`,
+    cpu: `${Number(p.cpu || 0).toFixed(1)}%`,
+    mem: fmtBytes(p.rss),
+  }));
+
+  const headers = { port: '端口', kind: '类型', purpose: '用途', dir: '启动目录', url: '链接', cpu: 'CPU', mem: '内存' };
+  const widthOf = (key) => Math.max(displayWidth(headers[key]), ...rows.map((r) => displayWidth(r[key])));
+
+  const widths = {
+    port: widthOf('port'),
+    kind: widthOf('kind'),
+    purpose: widthOf('purpose'),
+    dir: widthOf('dir'),
+    url: widthOf('url'),
+    cpu: widthOf('cpu'),
+    mem: widthOf('mem'),
+  };
+
+  const line = (r, highlight = false) => {
+    const purposeCell = padEndWidth(r.purpose, widths.purpose);
+    return [
+      ` ${r.lamp} `,
+      padEndWidth(r.port, widths.port),
+      padEndWidth(r.kind, widths.kind),
+      highlight ? bold(purposeCell) : purposeCell,
+      padEndWidth(r.dir, widths.dir),
+      padEndWidth(r.url, widths.url),
+      padEndWidth(r.cpu, widths.cpu),
+      padEndWidth(r.mem, widths.mem),
+    ].join('  ');
+  };
+
+  const headerLine = line({
+    lamp: ' ',
+    port: headers.port,
+    kind: headers.kind,
+    purpose: headers.purpose,
+    dir: headers.dir,
+    url: headers.url,
+    cpu: headers.cpu,
+    mem: headers.mem,
+  });
+
+  const dev = list.filter((p) => p.kind === 'dev');
+  const devMem = dev.reduce((sum, p) => sum + (p.rss || 0), 0);
+  const hidden = ports.length - list.length;
+
+  const footer = hidden
+    ? `${dev.length} 个开发服务，内存 ${fmtBytes(devMem)}；另有 ${hidden} 个系统服务，加 --all 查看`
+    : `${dev.length} 个开发服务，内存 ${fmtBytes(devMem)}，共 ${list.length} 个端口`;
+
+  return [
+    dim(headerLine),
+    ...rows.map((r) => line(r, true)),
+    '',
+    dim(footer),
+  ].join('\n');
+}
+
+async function runKill(spec, force) {
+  const port = Number(spec);
+  if (!Number.isInteger(port) || port <= 0) {
+    console.error(`端口号不合法：${spec ?? ''}（用法：portdeck --kill 3000）`);
+    process.exit(1);
+  }
+
+  const listeners = await listListening();
+  const target = listeners.find((l) => l.port === port);
+  if (!target) {
+    console.error(`没有进程在监听 ${port}`);
+    process.exit(1);
+  }
+
+  const result = await killPort(target.pid, port, { force });
+  if (!result.ok) {
+    console.error(result.error);
+    process.exit(1);
+  }
+
+  console.log(`已关闭 ${port}（PID ${target.pid}）`);
+}
+
+async function main(argv = process.argv.slice(2)) {
+  const has = (flag) => argv.includes(flag);
+
+  if (has('--help') || has('-h')) {
+    console.log(HELP);
+    return;
+  }
+
+  if (has('--version') || has('-v')) {
+    console.log(require('./package.json').version);
+    return;
+  }
+
+  const killIndex = argv.indexOf('--kill');
+  if (killIndex !== -1) return runKill(argv[killIndex + 1], has('--force'));
+
+  if (has('--list') || has('-l') || has('--json')) {
+    const snapshot = await buildSnapshot();
+    if (has('--json')) {
+      process.stdout.write(`${JSON.stringify(snapshot, null, 2)}\n`);
+      return;
+    }
+    console.log(formatTable(snapshot.ports, { all: has('--all'), color: Boolean(process.stdout.isTTY) }));
+    return;
+  }
+
+  migrateLegacyNotes();
+
+  if (has('--no-open')) process.env.NO_OPEN = '1';
+
+  const portIndex = argv.indexOf('--port');
+  const requested = portIndex !== -1 ? Number(argv[portIndex + 1]) : BASE_PORT;
+  start(Number.isInteger(requested) && requested > 0 ? requested : BASE_PORT);
+}
+
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err && err.message ? err.message : err);
+    process.exit(1);
+  });
+}
+
+module.exports = { main, formatTable, parseSsTable, listListening, buildSnapshot, killPort };

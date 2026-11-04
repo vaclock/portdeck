@@ -2,6 +2,10 @@
   "name": "portdeck",
   "version": "1.0.0",
   "description": "See every listening port on your machine — what it is, where it runs, and one click to kill it.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vaclock/portdeck.git"
+  },
   "keywords": [
     "ports",
     "localhost",
@@ -10,7 +14,8 @@
     "process-manager",
     "dashboard",
     "cli",
-    "macos"
+    "macos",
+    "linux"
   ],
   "license": "MIT",
   "type": "commonjs",
@@ -20,6 +25,7 @@
   "files": [
     "server.js",
     "public",
+    "install.sh",
     "README.md",
     "LICENSE"
   ],
@@ -29,9 +35,6 @@
   "engines": {
     "node": ">=18"
   },
-  "os": [
-    "darwin"
-  ],
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   }
